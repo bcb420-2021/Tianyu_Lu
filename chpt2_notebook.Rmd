@@ -1,0 +1,30 @@
+---
+title: "Chapter 2"
+output: html_notebook
+---
+
+```{r}
+library()
+```
+
+```{r}
+search()
+```
+```{r}
+install.packages("seqinr",repos="https://cran.rstudio.com/") 
+```
+
+```{r}
+library(seqinr)
+seqinr::words(3, c("A", "G", "C", "U"))
+```
+
+```{r}
+seqinr::choosebank("swissprot")
+mySeq <- seqinr::query("mySeq", "N=MBP1_YEAST")
+mbp1 <- seqinr::getSequence(mySeq)
+seqinr::closebank()
+x <- seqinr::AAstat(mbp1[[1]])
+barplot(sort(x$Compo), cex.names = 0.6)
+```
+
