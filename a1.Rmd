@@ -1,0 +1,325 @@
+---
+title: "Cleaning and Normalizing RNA-Seq Data (GSE152418)"
+author: "Tianyu Lu"
+output:
+  html_document:
+    toc: yes
+    df_print: paged
+  html_notebook:
+    toc: yes
+    theme: united
+---
+
+Code based on Ruth Isserlin's BCB420 course _Computational Systems Biology_, University of Toronto, Winter 2021.
+
+```{r}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+ install.packages("BiocManager")
+if (!requireNamespace("GEOmetadb", quietly = TRUE))
+ BiocManager::install("GEOmetadb")
+
+# exclusively using this library, so just use library(.)
+library(GEOmetadb)
+library(knitr)
+library(edgeR)
+library(biomaRt)
+
+# download metadata if file not already downloaded
+if(!file.exists('GEOmetadb.sqlite')) getSQLiteFile()
+
+```
+
+
+# Get data
+
+\href{https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE152418}{Systems biological assessment of immunity to severe and mild COVID-19 infections}
+```{r}
+# get the supplement for this series (study on COVID-19 effects)
+sfiles = getGEOSuppFiles('GSE152418')
+fnames = rownames(sfiles)
+
+b2 = read.delim(fnames[1], header = TRUE, check.names = FALSE)
+head(b2)
+
+```
+There aren't 60683 genes, so we need to filter the data.
+```{r}
+dim(b2)
+```
+
+# Filtering
+
+Filter out entries whose count per million is below one per sample.
+
+```{r}
+cpms = cpm(b2[,2:35])
+rownames(cpms) <- b2[,1]
+keep = rowSums(cpms >1) >=17
+b2_filtered = b2[keep,]
+dim(b2_filtered)
+
+```
+What counts as outliers? The paper doesn't mention the presence of any outliers. Seems like there are no +-Inf entries, despite the boxplot complaining.
+```{r}
+b2_filtered <- b2_filtered[is.finite(rowSums(b2_filtered[,2:35])), ]
+dim(b2_filtered)
+```
+
+
+```{r}
+data2plot <- log2(cpm(b2_filtered[,2:35]))
+boxplot(data2plot, xlab = "Samples", ylab = "log2 CPM",
+ las = 2, cex = 0.5, cex.lab = 0.5,
+ cex.axis = 0.5, main = "COVID and Healthy RNASeq Samples")
+#draw the median on each box plot
+abline(h = median(apply(data2plot, 2, median)),
+ col = "green", lwd = 0.6, lty = "dashed")
+```
+
+Pre-normalization data distribution.
+
+```{r}
+counts_density <- apply(log2(cpm(b2_filtered[,2:35])), 2, density)
+ #calculate the limits across all the samples
+ xlim <- 0; ylim <- 0
+ for (i in 1:length(counts_density)) {
+ xlim <- range(c(xlim, counts_density[[i]]$x));
+ ylim <- range(c(ylim, counts_density[[i]]$y))
+ }
+ cols <- rainbow(length(counts_density))
+ ltys <- rep(1, length(counts_density))
+ #plot the first density plot to initialize the plot
+ plot(counts_density[[1]], xlim=xlim, ylim=ylim, type="n",
+ ylab="Smoothed density of log2-CPM", main="", cex.lab = 0.8)
+ #plot each line
+ for (i in 1:length(counts_density)) lines(counts_density[[i]], col=cols[i])
+title("Data before TMM normalization")
+```
+Need to define groups based on the column names.
+```{r}
+colnames(b2)
+
+```
+Just manually define the groups. Later for more sophisticated analysis, can make the distinction between the different severity of COVID for the COVID patients.
+```{r}
+mygroups <- c()
+for (i in 1:17){
+    mygroups <- c(mygroups, sprintf("%s_covid", i))
+}
+for (i in 1:17){
+    mygroups <- c(mygroups, sprintf("%s_healthy", i))
+}
+```
+
+
+```{r}
+samples <- data.frame(lapply(mygroups,
+ FUN=function(x){unlist(strsplit(x, split = "_"))[c(1,2)]}))
+colnames(samples) <- colnames(b2)[2:35]
+rownames(samples) <- c("patients","cell_type")
+samples <- data.frame(t(samples))
+
+```
+
+# Normalization
+
+We use edgeR's Trimmed Mean of M-values (TMM) method to normalize our data. Since we are interested in mRNA/cell and there is likely asymmetry in the number of upregulated vs. downregulated genes, we choose (TMM) based on its decent performance compared to other normalization methods reviewed in Evans et al.
+
+```{r}
+# only keep numeric values
+filtered_data_matrix <- as.matrix(b2_filtered[,2:35])
+rownames(filtered_data_matrix) <- b2_filtered$ENSEMBLID
+d = DGEList(counts=filtered_data_matrix, group=samples$cell_type)
+d = calcNormFactors(d) 
+```
+
+Data distribution after normalization.
+
+```{r}
+normalized_counts <- cpm(d)
+counts_density <- apply(log2(normalized_counts), 2, density)
+ #calculate the limits across all the samples
+ xlim <- 0; ylim <- 0
+ for (i in 1:length(counts_density)) {
+ xlim <- range(c(xlim, counts_density[[i]]$x));
+ ylim <- range(c(ylim, counts_density[[i]]$y))
+ }
+ cols <- rainbow(length(counts_density))
+ ltys <- rep(1, length(counts_density))
+ #plot the first density plot to initialize the plot
+ plot(counts_density[[1]], xlim=xlim, ylim=ylim, type="n",
+ ylab="Smoothed density of log2-CPM", main="", cex.lab = 0.8)
+ #plot each line
+ for (i in 1:length(counts_density)) lines(counts_density[[i]], col=cols[i])
+ title("Data after TMM normalization")
+```
+Looks like data is already normalized.
+
+```{r}
+plotMDS(d, labels=rownames(samples),
+ col = c("darkgreen","blue")[factor(samples$cell_type)])
+title("MDS of GSE152418 Series")
+```
+Looks like there's a fairly clear separation between COVID vs. healthy samples!
+
+# Visualize data statistics
+
+Estimate tagwise and common dispersions.
+
+```{r}
+model_design <- model.matrix(~samples$patients
+ + samples$cell_type+0)
+d <- estimateDisp(d, model_design) 
+
+```
+
+```{r}
+plotBCV(d,col.tagwise = "black",col.common = "red",)
+title("Tagwise and common dispersions squared")
+```
+```{r}
+plotMeanVar(d, show.raw.vars = T,
+ show.tagwise.vars=T, NBline=T,
+ show.ave.raw.vars = T,show.binned.common.disp.vars = T)
+title("Mean vs. variance of data")
+```
+where grey is the raw gene-wise variances, light blue is the estimated gene-wise variances, the blue line is the mean-variance relationship under a negative binomial model, dark red (obscured) is the average raw variances, and red is the common dispersion.
+
+# Identifier mapping
+
+```{r}
+# get the data for homo sapiens
+ensembl <- useMart("ensembl")
+ensembl = useDataset("hsapiens_gene_ensembl",mart=ensembl)
+
+```
+
+```{r}
+# make a dataframe that maps ensembl id in one column to its corresponding HGNC symbol
+conversion_stash <- "id_conversion.rds"
+if(file.exists(conversion_stash)){
+ id_conversion <- readRDS(conversion_stash)
+} else {
+ id_conversion <- getBM(attributes = c("ensembl_gene_id","hgnc_symbol"),
+ filters = c("ensembl_gene_id"),
+ values = b2_filtered$ENSEMBLID,
+ mart = ensembl)
+ saveRDS(id_conversion, conversion_stash)
+}
+
+```
+
+Look at how many ensembl IDs were not mapped. Some HGCN symbols are just the empty string, so assume those aren't mapped either.
+
+```{r}
+normalized_counts_annot <- merge(id_conversion, normalized_counts, by.x = 1, by.y = 0, all.y = TRUE)
+
+rowidx <- which(is.na(normalized_counts_annot$hgnc_symbol) | normalized_counts_annot$hgnc_symbol == "")
+
+ensembl_id_missing_gene <- normalized_counts_annot$ensembl_gene_id[rowidx]
+length(ensembl_id_missing_gene)
+
+```
+Remove the rows with missing HGNC symbols.
+
+```{r}
+normalized_counts_annot <- normalized_counts_annot[-rowidx, ]
+rownames(normalized_counts_annot) <- 1:(dim(normalized_counts_annot)[1])
+```
+
+# Handling duplicates
+
+```{r}
+dups <- sort(table(normalized_counts_annot$hgnc_symbol))
+
+kable(dups[which(dups>1)], format="html")
+
+```
+
+```{r}
+normalized_counts_annot[normalized_counts_annot$hgnc_symbol %in% c("POLR2J3", "POLR2J4", "SLFN12L", "TBCE"), ]
+```
+
+POLR2J3 and POLR2J4 are genes encoding for an RNA polymerase subunit (rRNA), so we can safely discard those. SLFN12L and TBCE are not rRNA. We can just keep one of each and discard the other according to [1, 2].
+
+```{r}
+covid_data <- normalized_counts_annot[-c(8549, 11493, 11869, 13064, 13235, 13240) , ]
+
+
+```
+Check that there are no duplicates.
+```{r}
+dups <- sort(table(covid_data$hgnc_symbol))
+
+kable(dups[which(dups>1)], format="html")
+```
+
+Finally set the rownames to HGNC names.
+```{r}
+rownames(covid_data) <- covid_data$hgnc_symbol
+```
+
+
+# Answers to questions
+What are the control and test conditions of the dataset?
+
+- Control: 17 healthy people.
+- Test condition: 17 COVID patients ranging from moderate to severe to ICU conditions.
+
+Why is the dataset of interest to you?
+
+- COVID-19 patients have wide-ranging symptoms and severity. As a pertinent topic, it's interesting to try reproduce some methods that researchers use to unravel the mysteries of a new disease.
+
+Were there expression values that were not unique for specific genes? How did you handle these?
+
+- Yes. According to [1] and [2] we should not just add together two expression values. But two of our duplicate genes are rRNA so we can remove both copies. For the other two genes, just keep one of the two copies. If they show up as significant in differential expression analysis, then we should go back and look at the expression values of the two duplicates.
+
+Were there expression values that could not be mapped to current HUGO symbols?
+
+- Yes, 860 Ensembl IDs were not mapped to HGNC symbols.
+
+How many outliers were removed?
+
+- None.
+
+How did you handle replicates?
+
+- Consider 17 replicates of healthy cells and 17 replicates of COVID cells.
+
+What is the final coverage of your dataset?
+
+- We will use the Lander-Waterman equation $C = LN/G$ to estimate coverage, where $C$ is coverage, $G$ is haploid genome length ($3000M$ for humans), $L$ is read length, and $N$ is the number of reads. The authors used the Illumina NovaSeq 6000 sequencer for which the typical read length is 250bp. Thus we get a approximate maximum coverage of $(250)(15,875,541) / (3 \times 10^9) = 1.32$, meaning that each base is sequenced 1.32 times on average.
+
+```{r}
+mean(colSums(b2[2:35]))
+```
+# References
+
+The data discussed in this notebook have been deposited in NCBI's Gene Expression Omnibus (Edgar et al., 2002) and are accessible through GEO Series accession number GSE152418 (https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE152418).
+
+[1] B. (2019, May). Different Ensembl Ids point to the same GENE SYMBOL. Retrieved February 23, 2021, from https://www.biostars.org/p/389804/
+
+[2] Hoskins, J. (2019, September 20). How to deal with MULTIPLE Ensemble Ids mapping to one Gene symbol in A Rna-seq dataset? Retrieved February 23, 2021, from https://www.researchgate.net/post/How-to-deal-with-multiple-ensemble-IDs-mapping-to-one-gene-symbol-in-a-RNA-Seq-dataset
+
+[3] Arunachalam, P. S., Wimmers, F., Mok, C. K. P., Perera, R. A., Scott, M., Hagan, T., ... & Pulendran, B. (2020). Systems biological assessment of immunity to mild versus severe COVID-19 infection in humans. Science, 369(6508), 1210-1220.
+
+[4] Lander, E. S., & Waterman, M. S. (1988). Genomic mapping by fingerprinting random clones: a mathematical analysis. Genomics, 2(3), 231-239.
+
+[5] Evans, C., Hardin, J., & Stoebel, D. M. (2018). Selecting between-sample RNA-Seq normalization methods from the perspective of their assumptions. Briefings in bioinformatics, 19(5), 776-792.
+
+[6] Barrett, T., Wilhite, S. E., Ledoux, P., Evangelista, C., Kim, I. F., Tomashevsky, M., ... & Soboleva, A. (2012). NCBI GEO: archive for functional genomics data sets—update. Nucleic acids research, 41(D1), D991-D995.
+
+[7] Edgar, R., Domrachev, M., & Lash, A. E. (2002). Gene Expression Omnibus: NCBI gene expression and hybridization array data repository. Nucleic acids research, 30(1), 207-210.
+
+[8] Robinson MD, McCarthy DJ and Smyth GK (2010). edgeR: a
+  Bioconductor package for differential expression analysis
+  of digital gene expression data. Bioinformatics 26, 139-140
+  
+[9] Durinck, S., Spellman, P. T., Birney, E., & Huber, W. (2009). Mapping identifiers for the integration of genomic datasets with the R/Bioconductor package biomaRt. Nature protocols, 4(8), 1184.
+
+[10] Zhu, Y., Davis, S., Stephens, R., Meltzer, P. S., & Chen, Y. (2008). GEOmetadb: powerful alternative search engine for the Gene Expression Omnibus. Bioinformatics, 24(23), 2798-2800.
+
+[11] Yihui Xie (2020). knitr: A General-Purpose Package for
+  Dynamic Report Generation in R. R package version 1.30.
+
+
