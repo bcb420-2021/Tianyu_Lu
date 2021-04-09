@@ -1,6 +1,6 @@
 # Tianyu_Lu
 
-Journal pages: https://github.com/tianyu-lu/Tianyu_Lu/wiki  
+Journal pages: https://github.com/bcb420-2021/Tianyu_Lu/wiki 
 
 Assignment 1: https://github.com/bcb420-2021/Tianyu_Lu/blob/main/a1.html  
 
